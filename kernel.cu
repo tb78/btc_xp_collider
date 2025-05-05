@@ -1,75 +1,46 @@
 // src/kernel.cu
 #include "kernel.h"
 #include "config.h"
-#include "ecc_cuda.h" // Für ecc_get_pubkey
-#include "hash_cuda.h" // Für compute_hash160
+#include "ecc_cuda.h" // FÃ¼r ecc_get_pubkey
+#include "hash_cuda.h" // FÃ¼r compute_hash160
 #include <cuda_runtime.h>
 #include <stdint.h>
-// #include <stdio.h> // Nur für Debug printf
-#include <string.h> // Für Device-seitiges memcpy/memset
-
-// --- SHA1 Implementierung (unverändert) ---
-// ... (komplette SHA1_CTX, sha1_transform, sha1_init, sha1_update, sha1_final Implementierung hier einfügen) ...
-// --- HINWEIS: Der SHA1 Code von oben muss hier komplett rein kopiert werden ---
-struct SHA1_CTX {
-    uint32_t state[5];
-    uint64_t count;
-    uint8_t buffer[SHA1_BLOCK_LENGTH]; // 64 Bytes
-};
-#define SHA1_ROTL(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
-__device__ void dev_memcpy(void *dest, const void *src, size_t n) { /* ... Implementierung ... */ }
-__device__ void dev_memset(void *dest, int value, size_t n) { /* ... Implementierung ... */ }
-__device__ void sha1_transform(SHA1_CTX *ctx, const uint8_t block[SHA1_BLOCK_LENGTH]) { /* ... Implementierung ... */ }
-__device__ void sha1_init(SHA1_CTX *ctx) { /* ... Implementierung ... */ }
-__device__ void sha1_update(SHA1_CTX *ctx, const uint8_t *data, size_t len) { /* ... Implementierung ... */ }
-__device__ void sha1_final(SHA1_CTX *ctx, uint8_t digest[SHA1_DIGEST_LENGTH]) { /* ... Implementierung ... */ }
-// --- Ende SHA1 Implementierung ---
+// #include <stdio.h> // Nur fÃ¼r Debug printf
+#include <string.h> // FÃ¼r Device-seitiges memcpy/memset
 
 
-// --- OpenSSL PRNG Simulation (unverändert) ---
-__device__ void simulate_rand_poll_buffer(const uint64_t tick_count, const uint32_t pid, uint8_t *buf) { /* ... Implementierung unverändert ... */ }
-__device__ void md_rand_seed(uint8_t md[MD_STATE_SIZE], uint8_t pool[STATE_BUFFER_SIZE], uint32_t &p, uint32_t &q, const uint8_t *input, int num) { /* ... Implementierung unverändert ... */ }
-__device__ void md_rand_bytes(uint8_t *out, int num, uint8_t md[MD_STATE_SIZE], uint8_t pool[STATE_BUFFER_SIZE], uint32_t &p, uint32_t &q) { /* ... Implementierung unverändert ... */ }
-// --- Ende OpenSSL PRNG Simulation ---
 
 
-// --- secp256k1 Schlüssel Validierung (unverändert) ---
-__constant__ uint8_t SECP256K1_N[32] = { /* ... */ };
-__device__ int compare_32bytes_be(const uint8_t a[32], const uint8_t b[32]) { /* ... */ }
-__device__ bool validate_key(const uint8_t key[PRIVATE_KEY_LENGTH]) { /* ... */ }
-// --- Ende secp256k1 Schlüssel Validierung ---
-
-
-// --- Haupt-Kernel (Geändert) ---
+// --- Haupt-Kernel (GeÃ¤ndert) ---
 extern "C" __global__ void reconstruct_kernel(
     uint32_t start_timestamp,       // Startzeit des Zieltages (Unix UTC Sek.)
-    uint32_t total_seconds,         // Anzahl Sekunden (immer 86400 für einen Tag)
+    uint32_t total_seconds,         // Anzahl Sekunden (immer 86400 fÃ¼r einen Tag)
     uint32_t pid_min,               // Start-PID
     uint32_t pid_max,               // End-PID (inklusiv)
     uint32_t brute_force_range,     // Anzahl Brute-Force-Variationen (1 falls keine, sonst 2^N)
     const uint8_t* __restrict__ d_targets, // Device-Pointer zu flachen Ziel-HASH160s
     int num_targets,                // Anzahl der Ziel-Hashes
     FoundResult* __restrict__ d_results,    // Device-Pointer zum Ergebnis-Buffer
-    unsigned int* __restrict__ d_found_count, // Device-Pointer zum Zähler gefundener Keys
+    unsigned int* __restrict__ d_found_count, // Device-Pointer zum ZÃ¤hler gefundener Keys
     unsigned int max_results        // Maximale Anzahl speicherbarer Ergebnisse
 )
 {
     // Globale Thread ID berechnen
     unsigned long long global_idx = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
 
-    // Gesamtanzahl der Iterationen für die Grenzprüfung berechnen
+    // Gesamtanzahl der Iterationen fÃ¼r die GrenzprÃ¼fung berechnen
     unsigned long long pid_range_size = (unsigned long long)pid_max - pid_min + 1;
     // total_seconds ist immer 86400
     unsigned long long total_ticks_per_pid = (unsigned long long)total_seconds * TICKS_PER_SEC;
     unsigned long long base_combinations = pid_range_size * total_ticks_per_pid;
     unsigned long long total_iterations_for_check = base_combinations * brute_force_range;
 
-    // Grenzen für diesen Thread prüfen
+    // Grenzen fÃ¼r diesen Thread prÃ¼fen
     if (global_idx >= total_iterations_for_check) {
         return;
     }
 
-    // Parameter für diese Iteration ableiten
+    // Parameter fÃ¼r diese Iteration ableiten
     uint32_t brute_force_variation = 0;
     unsigned long long base_idx = global_idx;
     // Teile durch brute_force_range, um den Basis-Index (Zeit/PID/Tick) zu finden
@@ -83,14 +54,14 @@ extern "C" __global__ void reconstruct_kernel(
 
     // Leite Zeit-Offset, PID-Offset und Tick-Offset aus base_idx ab
     // Wir wissen, dass der Zeitbereich immer 86400 Sekunden ist.
-    // Wir können zuerst den PID-Offset bestimmen.
-    // Ticks pro PID über den gesamten Tag:
+    // Wir kÃ¶nnen zuerst den PID-Offset bestimmen.
+    // Ticks pro PID Ã¼ber den gesamten Tag:
     // total_ticks_per_pid wurde oben bereits berechnet
 
     uint32_t pid_offset = 0;
     unsigned long long rem_ticks_within_pid = base_idx;
 
-    if (total_ticks_per_pid > 0) { // Vermeide Division durch Null, falls total_seconds=0 wäre
+    if (total_ticks_per_pid > 0) { // Vermeide Division durch Null, falls total_seconds=0 wÃ¤re
         pid_offset = (uint32_t)(base_idx / total_ticks_per_pid);
         rem_ticks_within_pid = base_idx % total_ticks_per_pid;
     } else if (base_idx > 0) {
@@ -114,12 +85,12 @@ extern "C" __global__ void reconstruct_kernel(
      // else: rem_ticks ist 0, sec_offset ist 0, tick_offset ist 0 - passt
 
 
-    // Berechne die tatsächliche PID und den Zeitstempel
+    // Berechne die tatsÃ¤chliche PID und den Zeitstempel
     uint32_t current_pid = pid_min + pid_offset;
-    // Prüfe, ob die berechnete PID im gültigen Bereich liegt (kann durch Rundung bei großen Indizes passieren?)
+    // PrÃ¼fe, ob die berechnete PID im gÃ¼ltigen Bereich liegt (kann durch Rundung bei groÃŸen Indizes passieren?)
     if (current_pid > pid_max) {
         // Dies sollte theoretisch nicht passieren, wenn total_iterations_for_check korrekt berechnet wurde
-        // und die Grid-Größe passt. Sicherungshalber return.
+        // und die Grid-GrÃ¶ÃŸe passt. Sicherungshalber return.
         // printf("Warning: Calculated PID %u > pid_max %u for global_idx %llu\n", current_pid, pid_max, global_idx);
         return;
     }
@@ -149,15 +120,15 @@ extern "C" __global__ void reconstruct_kernel(
     // Das folgende ist nur ein einfaches, hypothetisches Beispiel:
     if (brute_force_range > 1 && brute_force_variation > 0) {
         // BEISPIEL: XORiere die ersten 4 Bytes des poll_buffers.
-        // Dies simuliert eine kleine, unbekannte Änderung in der frühen Entropie.
-        // Du könntest auch den `md`-State *nach* dem Seeden modifizieren,
-        // oder komplexere Änderungen vornehmen.
+        // Dies simuliert eine kleine, unbekannte Ã„nderung in der frÃ¼hen Entropie.
+        // Du kÃ¶nntest auch den `md`-State *nach* dem Seeden modifizieren,
+        // oder komplexere Ã„nderungen vornehmen.
         poll_buffer[0] ^= (uint8_t)(brute_force_variation);
         if (POLL_BUFFER_SIZE > 1) poll_buffer[1] ^= (uint8_t)(brute_force_variation >> 8);
         if (POLL_BUFFER_SIZE > 2) poll_buffer[2] ^= (uint8_t)(brute_force_variation >> 16);
         if (POLL_BUFFER_SIZE > 3) poll_buffer[3] ^= (uint8_t)(brute_force_variation >> 24);
 
-        // ***** ERSETZE DIESES BEISPIEL DURCH DEINE GEWÜNSCHTE LOGIK *****
+        // ***** ERSETZE DIESES BEISPIEL DURCH DEINE GEWÃœNSCHTE LOGIK *****
         // z.B. eine andere XOR-Maske, Addition, Modifikation des md-arrays etc.
     }
     // --- Ende Zustandsmodifikation ---
@@ -169,7 +140,7 @@ extern "C" __global__ void reconstruct_kernel(
     // 3. Generiere Private Key
     md_rand_bytes(private_key, PRIVATE_KEY_LENGTH, md, pool, p, q);
 
-    // 4. Validiere den Schlüssel
+    // 4. Validiere den SchlÃ¼ssel
     if (validate_key(private_key)) {
 
         // 5. Leite Public Key ab
